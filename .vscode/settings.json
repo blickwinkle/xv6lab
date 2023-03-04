@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "user.h": "c",
+        "types.h": "c",
+        "limits": "c",
+        "cstdio": "c",
+        "stat.h": "c"
+    }
+}

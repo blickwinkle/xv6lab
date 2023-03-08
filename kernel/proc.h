@@ -93,6 +93,15 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
+  
+
+  //alarm info
+  int alarmPeriodTicks;        // Ticks period
+  int ticksCount;              // How many ticks have been get from last period func call to last Tick Trap
+  uint64 userTickHandler;
+  int isHandleTick;           //  If non-zero, not call handler
+  struct trapframe *baktrapframe; // data page for trampoline.S used in tick handler
+
 
   // these are private to the process, so p->lock need not be held.
   uint64 kstack;               // Virtual address of kernel stack

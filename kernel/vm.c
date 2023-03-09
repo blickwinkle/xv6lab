@@ -5,6 +5,9 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
 
 /*
  * the kernel's page table.
@@ -181,9 +184,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      //panic("uvmunmap: walk");
+      continue ;
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      //panic("uvmunmap: not mapped");
+      continue ;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -315,9 +320,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      //panic("uvmcopy: pte should exist");
+      continue ;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue ;
+      //panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -359,8 +366,26 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+      struct proc *p = myproc();
+      if (isLazyAllocPage(p, va0) == 1) {
+        
+        void *npa = kalloc();
+        if (npa == 0) {
+          printf("not enough mm in lazy alloc\n");
+          //p->killed = 1;
+          return -1;
+        }
+        memset(npa, 0, PGSIZE);
+        if (mappages(p->pagetable, PGROUNDDOWN(va0), PGSIZE, (uint64)npa, PTE_U | PTE_W | PTE_V | PTE_R) != 0) {
+          //p->killed = 1;
+          return -1;
+        }
+      } else {
+        return -1;
+      }
+      pa0 = walkaddr(pagetable, va0);
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -384,8 +409,27 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+      struct proc *p = myproc();
+      if (isLazyAllocPage(p, va0) == 1) {
+        
+        void *npa = kalloc();
+        if (npa == 0) {
+          printf("not enough mm in lazy alloc\n");
+          //p->killed = 1;
+          return -1;
+        }
+        memset(npa, 0, PGSIZE);
+        if (mappages(p->pagetable, PGROUNDDOWN(va0), PGSIZE, (uint64)npa, PTE_U | PTE_W | PTE_V | PTE_R) != 0) {
+          //p->killed = 1;
+          return -1;
+        }
+      } else {
+        return -1;
+      }
+      pa0 = walkaddr(pagetable, va0);
+    }
+      
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
@@ -411,8 +455,27 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+      struct proc *p = myproc();
+      if (isLazyAllocPage(p, va0) == 1) {
+        
+        void *npa = kalloc();
+        if (npa == 0) {
+          printf("not enough mm in lazy alloc\n");
+          //p->killed = 1;
+          return -1;
+        }
+        memset(npa, 0, PGSIZE);
+        if (mappages(p->pagetable, PGROUNDDOWN(va0), PGSIZE, (uint64)npa, PTE_U | PTE_W | PTE_V | PTE_R) != 0) {
+          //p->killed = 1;
+          return -1;
+        }
+      } else {
+        return -1;
+      }
+      pa0 = walkaddr(pagetable, va0);
+    }
+      //return -1;
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;
@@ -439,4 +502,13 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+//IF va is lazy page, return 1, else return -1
+int isLazyAllocPage(struct proc *p, uint64 va) {
+  pte_t *pte;
+  if (va > p->sz || va <= p->trapframe->sp || ((pte = walk(p->pagetable, va, 0)) != 0 && (*pte & PTE_V) != 0)) {
+    return -1;
+  }
+  return 1;
 }

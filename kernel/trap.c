@@ -65,6 +65,22 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 13 || r_scause() == 15) {
+    uint64 pgfaultaddr = r_stval();
+    if (isLazyAllocPage(p, pgfaultaddr) == -1) {
+      p->killed = 1;
+    } else {
+      void *npa = kalloc();
+      if (npa == 0) {
+        printf("not enough mm in lazy alloc\n");
+        p->killed = 1;
+        goto endhandle;
+      }
+      memset(npa, 0, PGSIZE);
+      if (mappages(p->pagetable, PGROUNDDOWN(pgfaultaddr), PGSIZE, (uint64)npa, PTE_U | PTE_W | PTE_V | PTE_R) != 0) {
+        p->killed = 1;
+      }
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -72,6 +88,8 @@ usertrap(void)
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
+
+endhandle:
 
   if(p->killed)
     exit(-1);

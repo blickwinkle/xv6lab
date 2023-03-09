@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -14,6 +16,8 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+int phyCiteCount[PHYSTOP / PGSIZE] = {0};
 
 /*
  * create a direct-map page table for the kernel.
@@ -188,7 +192,10 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      if (phyCiteCount[pa / PGSIZE] > 0) {
+        phyCiteCount[pa / PGSIZE] --;
+      } else 
+        kfree((void*)pa);
     }
     *pte = 0;
   }
@@ -311,7 +318,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,19 +326,26 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    //if((mem = kalloc()) == 0)
+    //  goto err;
+    //memmove(mem, (char*)pa, PGSIZE);
+    flags &= (~PTE_W);
+    flags |= PTE_COW;
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      //kfree(mem);
       goto err;
     }
+    *pte &= (~0x3FF);
+    *pte |= flags;
+    phyCiteCount[pa / PGSIZE] ++;
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+
+  //uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
 
@@ -358,7 +372,11 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if (isCowPG(va0)) {
+      handleCowPG(va0);
+    }
     pa0 = walkaddr(pagetable, va0);
+    
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
@@ -439,4 +457,40 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+//1 yes 0 no
+int isCowPG(uint64 va) {
+  if (va >= MAXVA) return 0;
+  struct proc *p = myproc();
+  pte_t *pte = walk(p->pagetable, va, 0);
+  if (pte == 0 || (*pte & PTE_V) == 0) {
+    return 0;
+  }
+  return phyCiteCount[PTE2PA(*pte) / PGSIZE] > 0 || *pte & PTE_COW;
+}
+
+//1 succ 0 fail
+int handleCowPG(uint64 va) {
+  va = PGROUNDDOWN(va);
+  struct proc *p = myproc();
+  pte_t *pte = walk(p->pagetable, va, 0);
+  if (pte == 0 || (*pte & PTE_V) == 0) {
+    return 0;
+  }
+  uint64 oldpa = PTE2PA(*pte);
+  int flag = PTE_FLAGS(*pte);
+  if (phyCiteCount[oldpa / PGSIZE] > 0) {
+    void *npa = kalloc();
+    if (npa == 0) return 0;
+    memmove(npa, (const void *)oldpa, PGSIZE);
+    uvmunmap(p->pagetable, va, 1, 1);
+    if (mappages(p->pagetable, va, PGSIZE, (uint64)npa, (flag | PTE_W) & (~PTE_COW)) == -1) {
+      return 0;
+    }
+  } else {
+    *pte &= (~PTE_COW);
+    *pte |= PTE_W;
+  }
+  return 1;
 }

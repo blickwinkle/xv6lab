@@ -65,6 +65,10 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15 && isCowPG(r_stval()) == 1) {
+    if (handleCowPG(r_stval()) != 1) {
+      p->killed = 1;
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

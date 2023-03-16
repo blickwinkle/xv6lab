@@ -283,6 +283,77 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+static uint64 _open(char *path, int omode, int depth) {
+
+  int fd;
+  struct file *f;
+  struct inode *ip;
+  //int n;
+
+  if (depth > 10) return -1;
+
+  if(omode & O_CREATE){
+    ip = create(path, T_FILE, 0, 0);
+    if(ip == 0){
+      //end_op();
+      return -1;
+    }
+  } else {
+    if((ip = namei(path)) == 0){
+      //end_op();
+      return -1;
+    }
+    ilock(ip);
+    if(ip->type == T_DIR && omode != O_RDONLY){
+      iunlockput(ip);
+      //end_op();
+      return -1;
+    }
+    if (ip->type == T_SYMLINK) {
+      if (!(omode & O_NOFOLLOW)) {
+        char tmpPath[MAXPATH];
+        readi(ip, 0, (uint64)tmpPath, 0, ip->size);
+        iunlockput(ip);
+        return _open(tmpPath, omode, depth + 1);
+      }
+    }
+  }
+
+  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
+    iunlockput(ip);
+    //end_op();
+    return -1;
+  }
+
+  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+    if(f)
+      fileclose(f);
+    iunlockput(ip);
+    //end_op();
+    return -1;
+  }
+
+  if(ip->type == T_DEVICE){
+    f->type = FD_DEVICE;
+    f->major = ip->major;
+  } else {
+    f->type = FD_INODE;
+    f->off = 0;
+  }
+  f->ip = ip;
+  f->readable = !(omode & O_WRONLY);
+  f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
+  if((omode & O_TRUNC) && ip->type == T_FILE){
+    itrunc(ip);
+  }
+
+  iunlock(ip);
+  //end_op();
+
+  return fd;
+}
+
 uint64
 sys_open(void)
 {
@@ -296,6 +367,9 @@ sys_open(void)
     return -1;
 
   begin_op();
+  uint64 ret = _open(path, omode, 0);
+  end_op();
+  return ret;
 
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
@@ -350,6 +424,8 @@ sys_open(void)
 
   return fd;
 }
+
+
 
 uint64
 sys_mkdir(void)
@@ -482,5 +558,30 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+
+uint64
+sys_symlink(void)
+{
+  char pathsrc[MAXPATH];
+  char pathdst[MAXPATH];
+  struct inode *ip;
+
+  begin_op();
+  if(argstr(0, pathsrc, MAXPATH) < 0 || argstr(1, pathdst, MAXPATH) < 0 || (ip = create(pathdst, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+  int srclen = strlen(pathsrc);
+  if (srclen != writei(ip, 0, (uint64)pathsrc, 0, srclen)) {
+    printf("src path len error!\n");
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
   return 0;
 }

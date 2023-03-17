@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "proc.h"
+#include "file.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -14,6 +19,8 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+
 
 // Make a direct-map page table for the kernel.
 pagetable_t
@@ -428,4 +435,161 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int handlePF() {
+  struct proc *p = myproc();
+  uint64 faultaddr = r_stval();
+  int vmaind = -1;
+  for (int i = 0; i < MAXMMAP; i++) {
+    if (p->vmas[i].used) {
+      if (p->vmas[i].startAddr <= faultaddr && p->vmas[i].endAddr > faultaddr) {
+        vmaind = i;
+        break ;
+      }
+    }
+  }
+  if (vmaind == -1) return -1;
+  faultaddr = PGROUNDDOWN(faultaddr);
+  void *pa = kalloc();
+  memset(pa, 0, PGSIZE);
+  if (pa == 0) return -1;
+  
+  // pte_t *pte = walk(p->pagetable, faultaddr, 0);
+  // if (pte == 0) panic("handle pf walk \n");
+
+  int perm = PTE_V | PTE_U;
+  if (p->vmas[vmaind].prot & PROT_READ) perm |= PTE_R;
+  if (p->vmas[vmaind].prot & PROT_WRITE) perm |= PTE_W;
+  printf("map va %p to pa %p\n", faultaddr, pa);
+  if (mappages(p->pagetable, faultaddr, 1, (uint64)pa, perm) == -1) {
+    panic("handle pf error map!\n");
+  }
+  //int readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n);
+  struct file *f = p->vmas[vmaind].file;
+  uint readOff = p->vmas[vmaind].offset + (faultaddr - p->vmas[vmaind].startAddr);
+  uint readCount;
+  if (readOff + PGSIZE >= f->ip->size) readCount = f->ip->size - readOff;
+  else readCount = PGSIZE;
+  printf("pfaddr : %p, readOff : %d, readCount : %d\n", faultaddr, readOff, readCount);
+  if (readi(f->ip, 1, faultaddr, readOff, readCount) != readCount) {
+    panic("error read !\n");
+  }
+  return 1;
+}
+
+void *_mmap(void *addr, uint length, int prot, int flags, struct file *f, uint64 offset) {
+  //printf("length : %d\n", length);
+  if (addr != 0 || offset != 0) return MAP_FAILED;
+  struct proc *p = myproc();
+  uint64 tmpEndAddr = TRAPFRAME;
+  int vmaind = -1;
+  uint64 protFlag = PTE_U;
+  if (prot & PROT_READ) {
+    if (!(f->readable)) {
+      printf("can not read!\n");
+      return MAP_FAILED;
+    }
+    //protFlag |= PTE_R;
+  }
+  if (prot & PROT_WRITE) {
+    if (!f->writable && (flags & MAP_SHARED)) {
+      printf("can not write!\n");
+      return MAP_FAILED;
+    }
+    //protFlag |= PTE_W;
+  }
+  for (int i = 0; i < MAXMMAP; i++) {
+    if (p->vmas[i].used) {
+      tmpEndAddr = tmpEndAddr > p->vmas[i].startAddr ? p->vmas[i].startAddr : tmpEndAddr;
+    } else if (vmaind == -1) {
+      vmaind = i;
+      p->vmas[i].used = 1;
+    }
+  }
+
+  if (vmaind == -1) return 0;
+
+  tmpEndAddr = PGROUNDDOWN(tmpEndAddr);
+  uint64 tmpStartAddr = tmpEndAddr - length;
+
+  for (uint64 i = PGROUNDDOWN(tmpStartAddr); i < tmpEndAddr; i += PGSIZE) {
+    if (walkaddr(p->pagetable, i) != 0) {
+      panic("error find empty addr!\n");
+    }
+  }
+
+  tmpStartAddr = PGROUNDDOWN(tmpStartAddr);
+  tmpEndAddr = tmpStartAddr + length;
+  
+
+  for (uint64 i = PGROUNDDOWN(tmpStartAddr); i < PGROUNDUP(tmpEndAddr); i += PGSIZE) {
+    pte_t *pte = walk(p->pagetable, i, 1);
+    if (pte == 0) {
+      panic("error mmap walk!\n");
+    }
+    *pte = PTE2PA(*pte) | protFlag;
+    //*pte &= ~(PTE_V);
+  }
+  
+  p->vmas[vmaind].endAddr = tmpEndAddr;
+  p->vmas[vmaind].startAddr = tmpStartAddr;
+  p->vmas[vmaind].file = f;
+  p->vmas[vmaind].offset = 0;
+  p->vmas[vmaind].flags = flags;
+  p->vmas[vmaind].prot = prot;
+
+  filedup(f);
+  
+  printf("mmap alloc %p to %p \n", p->vmas[vmaind].startAddr, p->vmas[vmaind].endAddr);
+
+  return (void *)tmpStartAddr;
+}
+
+int _munmap(void *addr, uint length) {
+  struct proc *p = myproc();
+  struct file *f;
+  int vmaind = -1;
+  if ((uint64)addr != PGROUNDDOWN((uint64)addr)) {
+    panic("not alined!\n");
+  }
+  for (int i = 0; i < MAXMMAP; i++) {
+    if (p->vmas[i].used && ((uint64)addr == p->vmas[i].startAddr || (uint64)addr + length == p->vmas[i].endAddr)) {
+      vmaind = i;
+      p->vmas[i].used = 1;
+      break ;
+    }
+  }
+  if (vmaind == -1) return -1;
+  f = p->vmas[vmaind].file;
+
+  for (uint64 i = PGROUNDDOWN((uint64)addr); i < (uint64)addr + length; i += PGSIZE) {
+    pte_t *pte = walk(p->pagetable, i, 0);
+    if (!(*pte & PTE_V))
+      continue;
+    if (p->vmas[vmaind].flags & MAP_SHARED) {
+      uint writeOff = p->vmas[vmaind].offset + ((uint64)i - p->vmas[vmaind].startAddr);
+      uint writeCount = PGSIZE;
+      if (writeOff + writeCount > f->ip->size)
+        writeCount = f->ip->size - writeOff;
+      begin_op();
+      ilock(f->ip);
+      if (writei(f->ip, 1, (uint64)i, writeOff, writeCount) != writeCount)
+        panic("writei error!\n");
+      iunlock(f->ip);
+      end_op();
+    }
+    uvmunmap(p->pagetable, i, 1, 1);
+  }
+  if ((uint64)addr == p->vmas[vmaind].startAddr) {
+    p->vmas[vmaind].offset += ((uint64)addr - p->vmas[vmaind].startAddr);
+    p->vmas[vmaind].startAddr = (uint64)addr;
+  } else {
+    p->vmas[vmaind].endAddr = (uint64)addr;
+  }
+  if (p->vmas[vmaind].startAddr >= p->vmas[vmaind].endAddr) {
+    fileclose(p->vmas[vmaind].file);
+    p->vmas[vmaind].used = 0;
+  }
+  return 0;
 }

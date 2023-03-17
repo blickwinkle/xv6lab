@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -48,6 +49,9 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->kstack = KSTACK((int) (p - proc));
+      for (int i = 0; i < MAXMMAP; i++) {
+        initlock(&p->vmas[i].lock, "mmap");
+      }
   }
 }
 
@@ -283,6 +287,11 @@ fork(void)
   np->sz = p->sz;
 
   np->parent = p;
+  for (int i = 0; i < MAXMMAP; i++) {
+    if (p->vmas[i].used) {
+      np->vmas[i] = p->vmas[i];
+    }
+  }
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -344,6 +353,12 @@ exit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  for (int i = 0; i < MAXMMAP; i++) {
+    if (p->vmas[i].used) {
+      _munmap((void *)p->vmas[i].startAddr, p->vmas[i].endAddr - p->vmas[i].startAddr);
+    }
+  }
+
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -352,6 +367,8 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
+
+  
 
   begin_op();
   iput(p->cwd);
@@ -701,3 +718,4 @@ procdump(void)
     printf("\n");
   }
 }
+

@@ -95,3 +95,39 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_mmap(void)
+{
+  void *addr;
+  uint length;
+  int prot, flags, fd;
+  __INT64_TYPE__ offset;
+
+  // argaddr(0, (uint64 *)(&addr)); 
+  // argaddr(1, (uint64 *)(&length));
+  // argaddr(2, (uint64 *)(&prot)); 
+  // argaddr(3, (uint64 *)(&flags)); 
+  // argaddr(4, (uint64 *)(&fd)); 
+  // argaddr(5, (uint64 *)(&offset));
+
+  addr = (void *)myproc()->trapframe->a0;
+  length = (uint)myproc()->trapframe->a1;
+  prot = (int)myproc()->trapframe->a2;
+  flags = (int)myproc()->trapframe->a3;
+  fd = (int)myproc()->trapframe->a4;
+  offset = (__INT64_TYPE__)myproc()->trapframe->a5;
+
+  printf("addr %p, length : %d, trapframe a1 : %d, prot : %x, flags : %x, fd : %d, offset : %d\n", addr, length, myproc()->trapframe->a1, prot, flags, fd, offset);
+  struct file *f;
+  if(fd < 0 || fd >= NOFILE || (f = myproc()->ofile[fd]) == 0)
+    return -1;
+  return (uint64)_mmap(addr, length, prot, flags, f, offset);
+}
+
+
+uint64
+sys_munmap(void)
+{
+  return _munmap((void *)myproc()->trapframe->a0, (uint)myproc()->trapframe->a1);
+}

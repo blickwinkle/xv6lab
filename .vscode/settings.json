@@ -1,0 +1,21 @@
+{
+    "files.associations": {
+        "types.h": "c",
+        "memlayout.h": "c",
+        "fs.h": "c",
+        "limits": "c",
+        "*.tcc": "c"
+    },
+    "makefile.launchConfigurations": [
+        {
+            "cwd": "/home/blickwinkle/xv6-labs-2020/mkfs",
+            "binaryPath": "/home/blickwinkle/xv6-labs-2020/mkfs/mkfs",
+            "binaryArgs": []
+        },
+        {
+            "cwd": "/home/blickwinkle/xv6-labs-2020/kernel",
+            "binaryPath": "/home/blickwinkle/xv6-labs-2020/kernel/kernel",
+            "binaryArgs": []
+        }
+    ]
+}

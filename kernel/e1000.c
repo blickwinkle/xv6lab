@@ -12,6 +12,7 @@
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *tx_mbufs[TX_RING_SIZE];
 
+
 #define RX_RING_SIZE 16
 static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *rx_mbufs[RX_RING_SIZE];
@@ -20,6 +21,7 @@ static struct mbuf *rx_mbufs[RX_RING_SIZE];
 static volatile uint32 *regs;
 
 struct spinlock e1000_lock;
+
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -102,7 +104,28 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock);
+  //printf("In send\n");
+  uint txRingInd = regs[E1000_TDT];
+  if (txRingInd >= TX_RING_SIZE || !(tx_ring[txRingInd].status & E1000_TXD_STAT_DD)) {
+    //printf("Out send failed\n");
+    release(&e1000_lock);
+    return -1;
+  }
+  if (tx_mbufs[txRingInd]) {
+    mbuffree(tx_mbufs[txRingInd]);
+  }
+  //store pointer, used for free after sending
+  tx_mbufs[txRingInd] = m;
+
+  tx_ring[txRingInd].addr = (uint64)m->head;
+  tx_ring[txRingInd].length = m->len;
+  tx_ring[txRingInd].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  regs[E1000_TDT] = (txRingInd + 1) % TX_RING_SIZE;
+  //printf("send suc!\n");
+  release(&e1000_lock);
+  //printf("Out send suc\n");
   return 0;
 }
 
@@ -115,6 +138,34 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  
+  //acquire(&e1000_lock);
+  //printf("In recv\n");
+  while (1) {
+
+  
+  uint txRingInd = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+  if (!(rx_ring[txRingInd].status & E1000_RXD_STAT_DD)) {
+    //printf("rx not dd!\n");
+    //release(&e1000_lock);
+    //printf("Out recv failed\n");
+    return ;
+  }
+  rx_mbufs[txRingInd]->len = rx_ring[txRingInd].length;
+
+  //printf("try handle\n");
+  struct mbuf *tmp = rx_mbufs[txRingInd];
+  net_rx(tmp);
+  rx_mbufs[txRingInd] = mbufalloc(0);
+
+  rx_ring[txRingInd].addr = (uint64)rx_mbufs[txRingInd]->head;
+  rx_ring[txRingInd].status = 0;
+
+  regs[E1000_RDT] = txRingInd;
+}
+  //release(&e1000_lock);
+  
+  //printf("Out recv suc\n");
 }
 
 void
